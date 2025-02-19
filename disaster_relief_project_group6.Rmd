@@ -1,0 +1,651 @@
+---
+title: "Disaster Relief Project"
+author: "Alden Swain"
+date: "2024-03-10"
+output: html_document
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=FALSE)
+knitr::opts_chunk$set(cache=TRUE, autodep=TRUE)
+knitr::opts_chunk$set(fig.align="center", fig.pos="tbh")
+```
+```{r load-packages}
+#| message: FALSE
+library(tidymodels)
+library(tidyverse)
+library(discrim)
+library(patchwork)
+library(doParallel)
+library(probably)
+library(rsample)
+library(ggcorrplot)
+library(GGally)
+library(yardstick)
+library(gapminder)
+library(plotly)
+```
+
+```{r}
+cl <- makePSOCKcluster(parallel::detectCores(logical = FALSE))
+registerDoParallel(cl)
+```
+# EDA
+```{r data-initiate}
+#| message: FALSE
+haiti <- read_csv("HaitiPixels.csv", show_col_types = FALSE) %>% 
+  mutate(Blue_Tarp = ifelse(Class == "Blue Tarp", "Yes", "No")) %>% 
+  mutate(Blue_Tarp = factor(Blue_Tarp))
+
+levels(haiti$Blue_Tarp)
+```
+
+```{r color-density}
+#| warning: FALSE
+map_colors <- c("royalblue2", "salmon", "goldenrod", "mediumorchid", "olivedrab4")
+map_colors <- setNames(map_colors, c("Blue Tarp", "Rooftop", "Soil", "Various Non-Tarp", "Vegetation"))
+
+
+plot_ly(x=haiti$Red, y=haiti$Green, z=haiti$Blue, color=haiti$Class,
+colors=map_colors,
+type="scatter3d", mode="markers",
+marker=list(size=4)) %>%
+layout(title='Class by RGB value (Training Data)',
+scene = list(
+xaxis = list(title = 'Red'),
+yaxis = list(title = 'Green'),
+zaxis = list(title = 'Blue')
+)
+)
+```
+
+```{r mix-plot}
+#| message: FALSE
+map_colors <- c("royalblue2", "salmon", "goldenrod", "mediumorchid", "olivedrab4")
+map_colors <- setNames(map_colors, c("Blue Tarp", "Rooftop", "Soil", "Various Non-Tarp", "Vegetation"))
+
+ggplot(haiti, aes(fill=.data[['Class']], x=Red)) +
+geom_bar(position="fill") +
+scale_fill_manual(values = map_colors) +
+theme(legend.position.inside=c(0.85, 0.9)) +
+theme(legend.key.size = unit(.3, 'cm')) +
+scale_y_continuous(limits=c(0, 1.3)) +
+labs(y="Proportion", x="Red Strength", title='Distribution of Class vs Red Value')
+```
+```{r}
+ggplot(haiti, aes(fill=.data[['Class']], x=Green)) +
+geom_bar(position="fill") +
+scale_fill_manual(values = map_colors) +
+theme(legend.position=c(0.85, 0.9)) +
+theme(legend.key.size = unit(.3, 'cm')) +
+scale_y_continuous(limits=c(0, 1.3)) +
+labs(y="Proportion", x="Green Strength", title='Distribution of Class vs Green Value')
+```
+```{r}
+ggplot(haiti, aes(fill=.data[['Class']], x=Blue)) +
+geom_bar(position="fill") +
+scale_fill_manual(values = map_colors) +
+theme(legend.position=c(0.85, 0.9)) +
+theme(legend.key.size = unit(.3, 'cm')) +
+scale_y_continuous(limits=c(0, 1.3)) +
+labs(y="Proportion", x="Blue Strength", title='Distribution of Class vs Blue Value')
+```
+```{r import-holdouts}
+#| message: FALSE
+columns <- c('ID', 'X', 'Y', 'Map X', 'Map Y', 'Lat', 'Lon', 'B1', 'B2', 'B3')
+tarps67 <- read_table("HoldOutData/orthovnir067_ROI_Blue_Tarps.txt", col_names=columns, skip=8) %>% 
+  mutate(Blue_Tarp = "Yes")
+tarps69 <- read_table("HoldOutData/orthovnir069_ROI_Blue_Tarps.txt", col_names=columns, skip=8) %>% 
+  mutate(Blue_Tarp = "Yes")
+tarps78 <- read_table("HoldOutData/orthovnir078_ROI_Blue_Tarps.txt", col_names=columns, skip=8) %>% 
+  mutate(Blue_Tarp = "Yes")
+
+non67 <- read_table("HoldOutData/orthovnir067_ROI_NOT_Blue_Tarps.txt", col_names=columns, skip=8) %>% 
+  mutate(Blue_Tarp = "No")
+non69 <- read_table("HoldOutData/orthovnir069_ROI_NOT_Blue_Tarps.txt", col_names=columns, skip=8) %>% 
+  mutate(Blue_Tarp = "No")
+non78 <- read_table("HoldOutData/orthovnir078_ROI_NON_Blue_Tarps.txt", col_names=columns, skip=8) %>% 
+  mutate(Blue_Tarp = "No")
+non57 <- read_table("HoldOutData/orthovnir057_ROI_NON_Blue_Tarps.txt", col_names=columns, skip=8) %>% 
+  mutate(Blue_Tarp = "No")
+```
+
+```{r combine-holdouts}
+test <- bind_rows(tarps67, tarps69, tarps78, non57, non67, non69, non78) %>% 
+  mutate(Blue_Tarp = factor(Blue_Tarp)) %>% 
+  select(Lat, Lon, B1, B2, B3, Blue_Tarp) %>% 
+  rename(Red=B1, Green=B2, Blue=B3)
+```
+
+```{r holdout-eda}
+#| warning: FALSE
+set.seed(12345)
+map_colors2 <- c("blue", "gray")
+map_colors2 <- setNames(map_colors, c("Yes", "No"))
+
+haiti_test_subset <- sample_n(test, 70000)
+
+plot_ly(x=haiti_test_subset$Red, y=haiti_test_subset$Green, z=haiti_test_subset$Blue, color=haiti_test_subset$Blue_Tarp,
+colors=map_colors2,
+type="scatter3d", mode="markers",
+marker=list(size=4)) %>%
+layout(title='Class by RGB value (Test Data sample of size n=70000)',
+scene = list(
+xaxis = list(title = 'Red'),
+yaxis = list(title = 'Green'),
+zaxis = list(title = 'Blue')
+)
+)
+```
+
+
+# EDA done
+
+```{r data-params}
+set.seed(12345)
+resamples <- vfold_cv(haiti, v=10, strata=Blue_Tarp)
+h_metrics <- metric_set(roc_auc, accuracy)
+cv_control = control_resamples(save_pred = TRUE)
+
+formula <- Blue_Tarp ~ Red + Green + Blue
+
+rec <- recipe(formula, data=haiti) %>% 
+  step_normalize(all_numeric_predictors())
+```
+
+
+
+```{r log-reg}
+#| warning: FALSE
+set.seed(12345)
+logreg_model <- logistic_reg(mode="classification") %>%
+  set_engine("glm")
+
+logreg_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(logreg_model) %>% 
+  fit(haiti)
+
+logreg_cv <- fit_resamples(logreg_wf, resamples, control=cv_control)
+
+logreg_metrics <- collect_metrics(logreg_cv)
+logreg_metrics
+```
+```{r}
+roc_cv_data <- function(model_cv) {
+  cv_predictions <- collect_predictions(model_cv)
+  cv_predictions %>%
+    roc_curve(truth=Blue_Tarp, .pred_Yes, event_level="second")
+}
+```
+
+
+```{r logreg-roc}
+r1 <- roc_cv_data(logreg_cv) %>%
+ggplot(aes(x=1-specificity, y=sensitivity)) +
+  geom_line() +
+  labs(title="Logistic regression model")
+r1
+```
+
+
+
+```{r lda}
+set.seed(12345)
+lda_model <- discrim_linear(mode="classification") %>%
+  set_engine("MASS")
+
+lda_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(lda_model) %>% 
+  fit(haiti)
+
+lda_cv <- fit_resamples(lda_wf, resamples, control=cv_control)
+
+lda_metrics <- collect_metrics(lda_cv)
+lda_metrics
+```
+```{r lda-roc}
+r2 <- roc_cv_data(lda_cv) %>%
+ggplot(aes(x=1-specificity, y=sensitivity)) +
+  geom_line() +
+  labs(title="LDA")
+r2
+```
+
+
+
+```{r qda}
+set.seed(12345)
+qda_model <- discrim_quad(mode="classification") %>%
+  set_engine("MASS")
+
+qda_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(qda_model) %>% 
+  fit(haiti)
+
+qda_cv <- fit_resamples(qda_wf, resamples, control=cv_control)
+
+qda_metrics <- collect_metrics(qda_cv)
+qda_metrics
+```
+```{r qda-roc}
+r3 <- roc_cv_data(qda_cv) %>%
+ggplot(aes(x=1-specificity, y=sensitivity)) +
+  geom_line() +
+  labs(title="QDA")
+r3
+```
+
+
+
+```{r knn}
+set.seed(12345)
+knn_spec <- nearest_neighbor(engine="kknn", mode="classification",
+                             neighbors=tune())
+ 
+knn_wf <- workflow() %>%
+  add_recipe(rec) %>%
+  add_model(knn_spec)
+ 
+nn_params <- extract_parameter_set_dials(knn_wf) %>%
+  update(
+    neighbors=neighbors(c(2, 100))
+  )
+
+tune_results_knn <- tune_grid(knn_wf,
+                              resamples=resamples,
+                              control=cv_control,
+                              grid=grid_regular(nn_params, levels=50))
+ 
+show_best(tune_results_knn, metric='roc_auc', n=1)
+```
+
+```{r knn-autoplot}
+set.seed(12345)
+autoplot(tune_results_knn) +
+  labs(title="Tuning KNN")
+```
+
+```{r knn-params-roc}
+set.seed(12345)
+best_params_nn <- select_best(tune_results_knn, metric='roc_auc')
+ 
+best_knn_wf <- knn_wf %>%
+  finalize_workflow(best_params_nn) %>%
+  fit(haiti)
+
+knn_cv <- fit_resamples(best_knn_wf, resamples=resamples, control=cv_control)
+knn_metrics <- collect_metrics(knn_cv)
+knn_metrics
+```
+```{r knn-roc}
+r4 <- roc_cv_data(knn_cv) %>%
+ggplot(aes(x=1-specificity, y=sensitivity)) +
+  geom_line() +
+  labs(title="KNN")
+r4
+```
+
+
+
+
+
+
+```{r penalized}
+#| warning: FALSE
+#| message: FALSE
+set.seed(12345)
+pen_spec <- logistic_reg(engine="glmnet", mode="classification",
+                       penalty=tune(), mixture=tune())
+
+pen_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(pen_spec)
+
+pen_params <- extract_parameter_set_dials(pen_wf) %>% 
+  update(
+    penalty=penalty(c(-5,-1)),
+    mixture=mixture(c(0,1))
+  )
+
+pen_bayes <- tune_bayes(pen_wf,
+                        resamples=resamples,
+                        param_info=pen_params,
+                        iter=50
+                        )
+autoplot(pen_bayes) +
+  labs(title="Tuning Penalty and Mixture")
+show_best(pen_bayes, n=1)
+```
+```{r final-penalized}
+set.seed(12345)
+tuned_pen_model <- pen_wf %>% 
+  finalize_workflow(select_best(pen_bayes, metric="roc_auc")) %>% 
+  fit(haiti)
+
+pen_cv <- fit_resamples(tuned_pen_model, resamples=resamples, control=cv_control)
+pen_metrics <- collect_metrics(pen_cv)
+pen_metrics
+```
+
+```{r penalized-roc}
+r5 <- roc_cv_data(pen_cv) %>%
+ggplot(aes(x=1-specificity, y=sensitivity)) +
+  geom_line() +
+  labs(title="Penalized logistic regression model")
+r5
+```
+
+
+
+```{r random-forest}
+#| warning: FALSE
+#| message: FALSE
+set.seed(12345)
+random_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(rand_forest(mode="classification", mtry=tune(), min_n=tune()) %>% 
+              set_engine("ranger", importance="impurity"))
+random_params <- extract_parameter_set_dials(random_wf) %>% 
+  update(mtry=mtry(c(1,4)))
+random_bayes <- tune_bayes(random_wf,
+                       resamples=resamples,
+                       param_info=random_params,
+                       iter=20
+                       )
+autoplot(random_bayes) +
+  labs(title="Tuning Mtry and Min n")
+show_best(random_bayes, n=1)
+```
+
+```{r finalize-rf}
+set.seed(12345)
+tuned_random_model <- random_wf %>% 
+  finalize_workflow(select_best(random_bayes, metric="roc_auc")) %>% 
+  fit(haiti)
+
+random_cv <- fit_resamples(tuned_random_model, resamples=resamples, control=cv_control)
+random_metrics <- collect_metrics(random_cv)
+random_metrics
+```
+
+
+
+```{r randomforest-roc}
+r6 <- roc_cv_data(random_cv) %>%
+ggplot(aes(x=1-specificity, y=sensitivity)) +
+  geom_line() +
+  labs(title="Random Forest model")
+r6
+```
+
+
+```{r svm-linear}
+#| warning: FALSE
+set.seed(12345)
+svml_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(svm_linear(engine="kernlab", mode="classification",
+                       cost=tune(), margin=tune()))
+svml_params <- extract_parameter_set_dials(svml_wf)
+svml_bayes <- tune_bayes(svml_wf,
+                          resamples=resamples,
+                          param_info=svml_params,
+                          iter=25
+                          )
+autoplot(svml_bayes) +
+  labs(title="Tuning Cost and Margin")
+show_best(svml_bayes, n=1)
+```
+```{r final-smv-linear}
+set.seed(12345)
+tuned_svml_model <- svml_wf %>% 
+  finalize_workflow(select_best(svml_bayes, metric="roc_auc")) %>% 
+  fit(haiti)
+
+svml_cv <- fit_resamples(tuned_svml_model, resamples=resamples, control=cv_control)
+svml_metrics <- collect_metrics(svml_cv)
+svml_metrics
+```
+
+```{r svm-linear-roc}
+r7 <- roc_cv_data(svml_cv) %>%
+ggplot(aes(x=1-specificity, y=sensitivity)) +
+  geom_line() +
+  labs(title="SVM-Linear model")
+r7
+```
+
+
+
+```{r svm-polynomial}
+#| warning: FALSE
+#| message: FALSE
+set.seed(12345)
+svmp_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(svm_poly(engine="kernlab", mode="classification",
+                     cost=tune(), margin=tune(), degree=tune()))
+svmp_params <- extract_parameter_set_dials(svmp_wf)
+svmp_bayes <- tune_bayes(svmp_wf,
+                          resamples=resamples,
+                          param_info=svmp_params,
+                          iter=25
+                          )
+autoplot(svmp_bayes) +
+  labs(title="Tuning Cost, Margin, and Degree")
+show_best(svmp_bayes, n=1)
+```
+```{r final-svm-poly}
+set.seed(12345)
+tuned_svmp_model <- svmp_wf %>% 
+  finalize_workflow(select_best(svmp_bayes, metric="roc_auc")) %>% 
+  fit(haiti)
+
+svmp_cv <- fit_resamples(tuned_svmp_model, resamples=resamples, control=cv_control)
+svmp_metrics <- collect_metrics(svmp_cv)
+svmp_metrics
+```
+
+```{r svm-ploy-roc}
+r8 <- roc_cv_data(svmp_cv) %>%
+ggplot(aes(x=1-specificity, y=sensitivity)) +
+  geom_line() +
+  labs(title="SVM-Polynomial model")
+r8
+```
+
+
+
+```{r svm-radial-basis-function}
+#| warning: FALSE
+#| message: FALSE
+set.seed(12345)
+rbf_wf <- workflow() %>% 
+  add_recipe(rec) %>% 
+  add_model(svm_rbf(engine="kernlab", mode="classification",
+                    cost=tune(), margin=tune(), rbf_sigma=tune()))
+rbf_params <- extract_parameter_set_dials(rbf_wf) %>% 
+  update(rbf_sigma= rbf_sigma(range=c(-4, 0), trans=log10_trans()))
+rbf_bayes <- tune_bayes(rbf_wf,
+                          resamples=resamples,
+                          param_info=rbf_params,
+                          iter=25
+                          )
+autoplot(rbf_bayes) +
+  labs(title="Tuning Cost, Margin, and Sigma")
+show_best(rbf_bayes, n=1)
+```
+```{r final-smv-rbf}
+set.seed(12345)
+tuned_rbf_model <- rbf_wf %>% 
+  finalize_workflow(select_best(rbf_bayes, metric="roc_auc")) %>% 
+  fit(haiti)
+
+rbf_cv <- fit_resamples(tuned_rbf_model, resamples=resamples, control=cv_control)
+rbf_metrics <- collect_metrics(rbf_cv)
+rbf_metrics
+```
+
+```{r svm-rbf-roc}
+r9 <- roc_cv_data(rbf_cv) %>%
+ggplot(aes(x=1-specificity, y=sensitivity)) +
+  geom_line() +
+  labs(title="SVM-Radial Basis Function model")
+r9
+```
+
+
+
+```{r cv-stats}
+thresholds <- function(model) {
+    performance <- probably::threshold_perf(
+        model %>% collect_predictions(), 
+        Blue_Tarp, .pred_Yes, 
+        thresholds=seq(0.05, 0.9, 0.01), event_level="second",
+        metrics=metric_set(accuracy, sensitivity, specificity, j_index, precision)
+    )
+    max_j_index <- performance %>%
+        filter(.metric == "j_index") %>%
+        filter(.estimate == max(.estimate))
+    max_values <- performance %>%
+        filter(.threshold %in% max_j_index$.threshold)
+    return (max_values)
+}
+
+
+threshold_stats <- function(model) {
+  
+  # get best threshold
+  thresh <- thresholds(model) %>% filter(.metric == 'j_index') %>% data.frame() %>% select(.threshold)
+  
+  # calc stats
+  performance <- probably::threshold_perf(
+      model %>% collect_predictions(), 
+      Blue_Tarp, .pred_Yes, 
+      thresholds=thresh, event_level="second",
+      metrics=metric_set(j_index, accuracy, precision, sensitivity, specificity))
+  
+  # pivot to add FPR
+  thresh_stats <- pivot_wider(performance, id_cols=.threshold, names_from=.metric,
+                         values_from=.estimate) %>% mutate(FPR = 1 - specificity)
+  
+    return (thresh_stats)
+}
+
+knitr::kable(
+  bind_rows(
+  threshold_stats(logreg_cv) %>% mutate(model='Logistic Regression'),
+  threshold_stats(lda_cv) %>% mutate(model='LDA'),
+  threshold_stats(qda_cv) %>% mutate(model='QDA'),
+  threshold_stats(knn_cv)%>% mutate(model='KNN'),
+  threshold_stats(pen_cv)%>% mutate(model='Penalized Log Reg'),
+  threshold_stats(random_cv) %>% mutate(model='Random Forest'),
+  threshold_stats(svml_cv) %>% mutate(model="SVM Linear"),
+  threshold_stats(svmp_cv) %>% mutate(model="SVM Polynomial"),
+  threshold_stats(rbf_cv) %>% mutate(model="Radial Basis Function")
+  ),
+  caption = 'Cross Validation Metrics at Selected Threshold', digits=3
+) %>% kableExtra::kable_styling(full_width=FALSE)
+
+
+
+```
+
+
+
+```{r compare-ROC-curves}
+roc_cv_data <- function(model_cv) {
+  cv_predictions <- collect_predictions(model_cv)
+  cv_predictions %>%
+    roc_curve(truth=Blue_Tarp, .pred_Yes, event_level="second")
+}
+bind_rows(
+  roc_cv_data(logreg_cv) %>% mutate(model="Logistic regression"),
+  roc_cv_data(lda_cv) %>% mutate(model="LDA"),
+  roc_cv_data(qda_cv) %>% mutate(model="QDA"),
+  roc_cv_data(knn_cv) %>% mutate(model="KNN"),
+  roc_cv_data(pen_cv) %>% mutate(model="Penalized Logistic regression"),
+  roc_cv_data(random_cv) %>% mutate(model="Random Forest"),
+  roc_cv_data(svml_cv) %>% mutate(model="SVM Linear"),
+  roc_cv_data(svmp_cv) %>% mutate(model="SVM Polynomial"),
+  roc_cv_data(rbf_cv) %>% mutate(model="Radial Basis Function")
+) %>%
+ggplot(aes(x=1-specificity, y=sensitivity, color=model)) +
+  geom_line() +
+  labs(title="ROC Curves of All Models") +
+  coord_cartesian(xlim=c(0, 0.25), ylim=c(0.75, 1))
+```
+
+
+
+
+
+# Holdout stuff
+```{r holdout-predictions}
+logreg_ho <- predict(logreg_wf, new_data=test) %>% 
+  bind_cols(test)
+lda_ho <- predict(lda_wf, new_data=test) %>% 
+  bind_cols(test)
+qda_ho <- predict(qda_wf, new_data=test) %>% 
+  bind_cols(test)
+knn_ho <- predict(best_knn_wf, new_data=test) %>% 
+  bind_cols(test)
+pen_ho <- predict(tuned_pen_model, new_data=test) %>% 
+  bind_cols(test)
+random_ho <- predict(tuned_random_model, new_data = test) %>% 
+  bind_cols(test)
+svml_ho <- predict(tuned_svml_model, new_data=test) %>% 
+  bind_cols(test)
+svmp_ho <- predict(tuned_svmp_model, new_data=test) %>% 
+  bind_cols(test)
+rbf_ho <- predict(tuned_rbf_model, new_data=test) %>% 
+  bind_cols(test)
+```
+
+```{r holdout-metrics}
+holdout_stats <- function(ho_model, train_model) {
+  
+  # get best threshold
+  thresh <- thresholds(train_model) %>% filter(.metric == 'j_index') %>% data.frame() %>% select(.threshold)
+  
+  # calc stats
+  ho_model$.pred_class <- as.numeric(ho_model$.pred_class == "Yes")
+  performance <- probably::threshold_perf(
+      ho_model, truth=Blue_Tarp, estimate=.pred_class, 
+      thresholds=thresh, event_level="second",
+      metrics=metric_set(j_index, accuracy, precision, sensitivity, specificity))
+  
+  # pivot to add FPR
+  thresh_stats <- pivot_wider(performance, id_cols=.threshold, names_from=.metric,
+                         values_from=.estimate) %>% mutate(FPR = 1 - specificity)
+  
+    return (thresh_stats)
+}
+
+knitr::kable(
+  bind_rows(
+  holdout_stats(logreg_ho, logreg_cv) %>% mutate(model='Logistic Regression'),
+  holdout_stats(lda_ho, lda_cv) %>% mutate(model='LDA'),
+  holdout_stats(qda_ho, qda_cv) %>% mutate(model='QDA'),
+  holdout_stats(knn_ho, knn_cv)%>% mutate(model='KNN'),
+  holdout_stats(pen_ho, pen_cv)%>% mutate(model='Penalized Log Reg'),
+  holdout_stats(random_ho, random_cv) %>% mutate(model='Random Forest'),
+  holdout_stats(svml_ho, svml_cv) %>% mutate(model="SVM Linear"),
+  holdout_stats(svmp_ho, svmp_cv) %>% mutate(model="SVM Polynomial"),
+  holdout_stats(rbf_ho, rbf_cv) %>% mutate(model="Radial Basis Function")
+  ),
+  caption = 'Holdout Metrics at Selected Threshold', digits = 3
+) %>% kableExtra::kable_styling(full_width=FALSE)
+```
+
+
+
+```{r ref.label=knitr::all_labels(), echo=TRUE, eval=FALSE}
+```
+
+```{r}
+stopCluster(cl)
+registerDoSEQ()
+```
