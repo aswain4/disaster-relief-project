@@ -1,5 +1,5 @@
 # Haiti Disaster Relief Image Classification Project
-**Note: that this was a project for the Statistical Learning class I took as part of the Master's of Data Science program at UVA.**
+**Note: this was a project for the 'Statistical Learning' class as part of the Master's of Data Science program at UVA.**
 
 ## Project Overview
 This project implements classification algorithms to solve a critical humanitarian challenge from the 2010 Haiti earthquake: locating displaced persons in need of emergency aid. Following the earthquake, displaced persons created temporary shelters using blue tarps. While rescue teams from the U.S. military needed to deliver food and water to these locations, the destruction of infrastructure and vast area made locating these shelters extremely challenging.
